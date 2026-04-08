@@ -817,11 +817,10 @@ const AM = {
 //  Gemini 모델 폴백 목록
 // ════════════════════════════════════════════════
 const MODELS = [
-  'gemini-3.1-flash-live',
-  'gemini-3.1-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3-flash',
   'gemini-2.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-2.5-flash-lite',
 ];
 
 // ════════════════════════════════════════════════
@@ -992,27 +991,65 @@ function localDelete(filename) {
 // ════════════════════════════════════════════════
 //  Gemini API 호출
 // ════════════════════════════════════════════════
+// 다음 모델로 폴백해야 하는 HTTP 상태코드
+const _FALLBACK_STATUS = new Set([
+  400, // Bad Request (모델 미지원 파라미터 등)
+  404, // Not Found (모델 없음)
+  429, // Too Many Requests (할당량 초과 / rate limit)
+  500, // Internal Server Error
+  503, // Service Unavailable (과부하)
+  504, // Gateway Timeout
+]);
+// 다음 모델로 폴백해야 하는 오류 메시지 키워드
+const _FALLBACK_MSG = [
+  'not found', 'not exist', 'deprecated',
+  'quota', 'rate limit', 'resource exhausted',
+  'overloaded', 'high demand', 'capacity',
+  'unavailable', 'timeout', 'deadline',
+  'internal', 'backend error',
+];
+
 async function gCall(prompt, temp, idx) {
   idx = idx || 0;
-  if (idx >= MODELS.length) throw new Error('사용 가능한 모델을 찾지 못했습니다.');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODELS[idx]}:generateContent?key=${STATE.apiKey}`;
-  const res = await fetch(url, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      contents: [{parts: [{text: prompt}]}],
-      generationConfig: {temperature: temp||0.25, maxOutputTokens: 4096}
-    })
-  });
+  if (idx >= MODELS.length) throw new Error('사용 가능한 모델을 찾지 못했습니다. (모든 모델 응답 없음)');
+  const modelName = MODELS[idx];
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${STATE.apiKey}`;
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        contents: [{parts: [{text: prompt}]}],
+        generationConfig: {temperature: temp||0.25, maxOutputTokens: 4096}
+      })
+    });
+  } catch (networkErr) {
+    console.warn(`[gCall] ${modelName} 네트워크 오류 → 다음 모델 전환:`, networkErr.message);
+    return gCall(prompt, temp, idx + 1);
+  }
+
   if (!res.ok) {
     const e = await res.json().catch(() => ({}));
-    const msg = (e.error && e.error.message) || '';
-    if (res.status === 404 || res.status === 400 || msg.includes('not found'))
+    const msg = ((e.error && e.error.message) || '').toLowerCase();
+    const shouldFallback =
+      _FALLBACK_STATUS.has(res.status) ||
+      _FALLBACK_MSG.some(kw => msg.includes(kw));
+    if (shouldFallback) {
+      console.warn(`[gCall] ${modelName} 실패 (${res.status}) → 다음 모델 전환`);
       return gCall(prompt, temp, idx + 1);
-    throw new Error(msg || 'API 오류 (' + res.status + ')');
+    }
+    // 401·403 등 인증 오류는 즉시 사용자에게 알림
+    throw new Error(e.error?.message || `API 오류 (${res.status})`);
   }
+
   const d = await res.json();
   const txt = d.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!txt) throw new Error('빈 응답');
+  if (!txt) {
+    const finishReason = d.candidates?.[0]?.finishReason || '';
+    console.warn(`[gCall] ${modelName} 빈 응답 (${finishReason}) → 다음 모델 전환`);
+    return gCall(prompt, temp, idx + 1);
+  }
   return txt;
 }
 function parsePipe(raw, fields) {
