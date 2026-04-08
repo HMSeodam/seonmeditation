@@ -850,7 +850,7 @@ const STATE = {
 // ════════════════════════════════════════════════
 function getToday() {
   const d = new Date();
-  return d.toISOString().slice(0,10);
+  return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10); // KST 자정 기준
 }
 function getTimestamp() {
   const d = new Date();
