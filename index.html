@@ -2868,7 +2868,7 @@ function _escH(s) {
       <label class="db-num">말을 멈추고 <input id="dbDelay" type="number" min="0.5" max="10" step="0.1" inputmode="decimal" onchange="SEONU.setDelay(this.value)" aria-label="자동 응답 대기 초"> 초 뒤</label>
     </div>
     <div class="db-row">
-      <span class="db-lb">답의 근거</span>
+      <span class="db-lb">답변 근거</span>
       <div class="db-seg" id="dbWeb"><button type="button" data-v="1" onclick="SEONU.set('web',true)">구글 검색 함께</button><button type="button" data-v="0" onclick="SEONU.set('web',false)">기본 지식만</button></div>
     </div>
     <div class="db-row">
@@ -2901,7 +2901,7 @@ function _escH(s) {
    · 키: 시작 화면에서 넣은 Gemini API Key(STATE.apiKey)를 그대로 씀 — 따로 저장하지 않음
    · 모델: aitutor의 models.json(GitHub Actions가 매주 갱신)을 함께 읽어 씀.
            못 읽으면 아래 기본 목록. 막힌 모델(종료·한도·붐빔)은 다음 모델로 자동 전환
-   · 답: 친근한 구어체 2~4문장, 필요하면 Google 검색(grounding)으로 사실 확인
+   · 답: 친근한 구어체로 짧게(보통 1~2문장, 많아야 3문장), 필요하면 Google 검색(grounding)으로 사실 확인
    · 지금 보고 있는 화면(명상 중·성찰 일기·간화선 화두 등)을 함께 알려 상황에 맞게 답함
      (간화선 화두의 '정답'은 말하지 않도록 지시)
    · 음성 인식·읽기는 브라우저 내장(토큰 0). 인식이 없는 브라우저(파이어폭스·일부 앱 내 브라우저)는
@@ -2959,9 +2959,11 @@ const SEONU = (() => {
   }
 
   /* ── 설정 (목소리·빠르기 등만 기억, 키는 기억하지 않음) ── */
-  const cfg = Object.assign({ gender: 'f', rate: 'calm', delay: 1.6, web: true, lang: 'ko-KR', loop: true, model: '', ready: false },
+  const cfg = Object.assign({ gender: 'f', rate: 'calm', delay: 1.6, web: false, lang: 'ko-KR', loop: true, model: '', ready: false },
     (() => { try { return JSON.parse(localStorage.getItem('dbCfg') || '{}'); } catch (_) { return {}; } })());
   const save = () => { try { localStorage.setItem('dbCfg', JSON.stringify(cfg)); } catch (_) {} };
+  // 답변 근거의 기본값을 '기본 지식만'으로 바꿈 — 예전에 저장된 설정도 한 번만 바꿔 줌 (그 뒤 고른 것은 그대로 기억)
+  if ((cfg.ver || 0) < 2) { cfg.web = false; cfg.ver = 2; save(); }
 
   let on = false, st = 'idle';
   let rec = null, carry = '', sFin = '', sInt = '';
@@ -3332,7 +3334,7 @@ const SEONU = (() => {
     return [
       '너는 선명상 수행 앱 「선명상일지」에 함께 사는 음성 명상 도우미 「선우(善友)」이다. 함께 수행하는 다정하고 편안한 길벗처럼 말한다. 너의 답은 그대로 소리 내어 읽힌다.',
       '말하기 규칙:',
-      '- 따뜻하고 친근한 존댓말(~해요, ~예요)로, 핵심부터 자연스러운 구어체 2~4문장. 사용자가 자세히 말해 달라고 할 때만 길게(8문장 이내).',
+      '- 따뜻하고 친근한 존댓말(~해요, ~예요)로, 핵심만 짧게 말한다. 보통 1~2문장, 많아야 3문장이며 한 문장도 길게 늘이지 않는다. 사용자가 자세히 말해 달라고 할 때만 5문장 이내로 조금 더 말한다. 끝에 습관처럼 붙이는 인사·요약·되묻기는 하지 않는다.',
       '- 학술적인 설명·인용·전문 용어는 피하고, 꼭 필요하면 쉬운 우리말로 풀어서 말한다.',
       '- 표·목록·제목·마크다운·이모지·URL은 쓰지 않는다. 한자 용어는 한글 독음으로만 말한다(괄호 병기 금지).',
       '- 호흡·자세·마음 다루기를 안내할 때는 지금 바로 따라 할 수 있게, 짧은 문장으로 천천히 말한다.',
@@ -3340,7 +3342,7 @@ const SEONU = (() => {
       '- 사용자를 따로 부르지 말고, 매번 인사로 시작하지 않는다.',
       cfg.web
         ? '자료: 명상법·불교 이야기·건강·장소·최신 소식처럼 사실 확인이 필요한 내용은 Google 검색으로 확인하고, 검색한 내용은 "찾아보니"처럼 자연스럽게 밝힌다. 위로·공감이나 간단한 호흡 안내는 검색 없이 바로 답한다.'
-        : '자료: 검색 없이 알고 있는 지식으로 답한다. 확실하지 않으면 모른다고 솔직하게 말한다.',
+        : '자료: 검색 없이 알고 있는 지식으로 답한다. 확실하지 않으면 모른다고 솔직하게 말한다. 오늘의 소식·날씨·사찰 행사 일정·운영 시간처럼 지금 확인해야 하는 정보를 물으면, 지금은 검색 없이 답하고 있어 확인할 수 없다고 말하고 설정의 「답변 근거」에서 「구글 검색 함께」를 고르면 찾아볼 수 있다고 안내한다. 경전 구절이나 선사의 말씀을 원문 그대로 옮길 때는 확실한 것만 말하고, 기억이 흐리면 대강의 뜻으로만 전한다.',
       '간화선: 사용자가 화두를 참구하고 있을 때 화두의 정답이나 풀이를 대신 말해 주지 않는다. 화두는 스스로 의심을 일으켜 붙드는 것이니, 의심을 이어 가는 태도와 마음가짐만 안내하고 점검은 화면의 「입참」과 선사(禪師)께 맡기라고 말한다.',
       '안전: 의학적 진단이나 치료를 대신하지 않는다. 몸이 아프거나 마음이 많이 힘들다고 하면 먼저 공감한 뒤 전문가나 가까운 사람의 도움을 권한다. 스스로를 해칠 생각을 말하면 부드럽게 공감하며 자살예방상담전화 109(24시간)나 가까운 사람에게 바로 연락하도록 권한다.',
       '사용자가 말한 언어로 답한다.',
