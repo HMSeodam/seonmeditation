@@ -364,7 +364,9 @@ label{font-size:.82rem;color:var(--muted);margin-bottom:.35rem;display:block}
 @media(max-width:600px){:root{--db-fs:54px;--db-r:max(12px, calc(env(safe-area-inset-right) + 8px));--db-b:calc(12px + env(safe-area-inset-bottom))}}
 /* 버튼이 화면 맨 아래 버튼·글을 가리지 않도록 여백 */
 .container,.diary-wrap,.ganhwa-wrap{padding-bottom:calc(var(--db-fs) + var(--db-b) + 1.2rem)}
-.intro-wrap,.complete-wrap{padding-bottom:calc(var(--db-fs) + var(--db-b) + 1rem)}
+.complete-wrap{padding-bottom:calc(var(--db-fs) + var(--db-b) + 1rem)}
+/* 시작(메인)·명부·관리자 화면에서는 선우를 숨김 */
+body.db-hide #dbFab,body.db-hide #dbP{display:none!important}
 
 /* ── 떠 있는 버튼 ── */
 #dbFab{position:fixed;right:var(--db-r);bottom:var(--db-b);width:var(--db-fs);height:var(--db-fs);padding:0;border-radius:50%;
@@ -441,7 +443,7 @@ body.db-typing #dbFab,body.db-typing #dbP.mini{opacity:0;pointer-events:none;tra
 @keyframes dbEqS{0%,100%{height:5px}50%{height:11px}}
 .db-main{flex:1;min-width:0}
 .db-stat{font-size:.74rem;font-weight:700;color:var(--gold);letter-spacing:.02em}
-.db-tx{font-size:.84rem;color:var(--ink);line-height:1.65;margin-top:2px;max-height:6.6em;overflow-y:auto;word-break:keep-all;overflow-wrap:anywhere}
+.db-tx{white-space:pre-line;font-size:.84rem;color:var(--ink);line-height:1.65;margin-top:2px;max-height:6.6em;overflow-y:auto;word-break:keep-all;overflow-wrap:anywhere}
 .db-tx .itm{color:var(--muted)}
 .db-tx .ph{color:var(--muted);font-size:.76rem}
 .db-tx .ans{color:var(--ink3)}
@@ -1009,8 +1011,7 @@ const MODELS_FALLBACK = [
 function gModelList() {
   try {
     if (typeof SEONU !== 'undefined' && SEONU.modelOrder) {
-      const l = SEONU.modelOrder(GANHWA_FIRST);
-      if (l && l.length) return l;
+      return SEONU.modelOrder(GANHWA_FIRST);   // 비어 있으면 = 이번 접속에서 쓸 수 있는 모델이 남지 않음
     }
   } catch (_) {}
   return MODELS_FALLBACK;
@@ -1218,13 +1219,29 @@ function gGenCfg(model, temp) {
 }
 const G_WAIT_MS = 45000;                 // 한 모델을 기다리는 최대 시간 — 넘으면 멈춘 것으로 보고 다음 모델로
 
+// 모델 로테이션 결과(어느 모델이 왜 안 됐는지) — 모든 모델이 실패했을 때 안내에 씀
+const _G_WHY = { gone: '사용 불가', day: '오늘 한도', min: '분당 한도', busy: '붐빔', wait: '응답 없음', err: '오류', empty: '빈 응답', net: '연결 오류' };
+let _gTried = [];
+
 async function gCall(prompt, temp, idx, list) {
   idx = idx || 0;
-  list = list || gModelList();          // 이번 호출 동안은 같은 순서로 차례차례 시도
-  if (idx >= list.length) throw new Error('지금은 응답하는 모델이 없습니다. 1~2분 뒤 다시 시도해 주십시오.');
+  if (idx === 0) _gTried = [];
+  list = list || gModelList();          // 이번 호출 동안은 같은 순서로 차례차례 시도 (로테이션)
+  if (!list.length) throw new Error('이 키로 지금 쓸 수 있는 모델이 남아 있지 않습니다(오늘 한도 소진 등). 한국 시간 오후 4~5시 이후에 다시 시도해 주십시오.');
+  if (idx >= list.length) {
+    const sum = _gTried.map(x => `${x.m.replace(/^gemini-/, '')} ${_G_WHY[x.k] || x.k}`).join(' → ');
+    console.warn('[gCall] 모델 로테이션 결과:', sum);
+    const allDay = _gTried.length && _gTried.every(x => x.k === 'day' || x.k === 'gone');
+    throw new Error((allDay
+      ? '오늘 이 키로 쓸 수 있는 AI 사용량을 모든 모델에서 다 썼습니다. 한국 시간 오후 4~5시쯤 다시 풀립니다.'
+      : '지금은 응답하는 모델이 없습니다. 1~2분 뒤 다시 시도해 주십시오.') + (sum ? ` (시도한 모델: ${sum})` : ''));
+  }
   const modelName = list[idx];
-  const next = (status, why) => {        // 이 모델을 기록해 두고(다음 호출에서 피함) 다음 모델로
-    try { SEONU.noteModel(modelName, status, why); } catch (_) {}
+  const next = (status, raw) => {        // 이 모델을 기록해 두고(다음 호출에서 피함) 다음 모델로
+    let k = 'err';
+    try { k = SEONU.noteModel(modelName, status, raw) || 'err'; } catch (_) {}
+    if (raw === 'empty') k = 'empty';
+    _gTried.push({ m: modelName, k });
     return gCall(prompt, temp, idx + 1, list);
   };
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
@@ -1249,6 +1266,7 @@ async function gCall(prompt, temp, idx, list) {
       return next(504, 'timeout');
     }
     console.warn(`[gCall] ${modelName} 네트워크 오류 → 다음 모델 전환:`, err.message);
+    _gTried.push({ m: modelName, k: 'net' });
     return gCall(prompt, temp, idx + 1, list);
   }
   clearTimeout(timer);
@@ -1267,7 +1285,7 @@ async function gCall(prompt, temp, idx, list) {
       _FALLBACK_MSG.some(kw => msg.includes(kw));
     if (shouldFallback) {
       console.warn(`[gCall] ${modelName} 실패 (${res.status}) → 다음 모델 전환`);
-      return next(res.status, msg);
+      return next(res.status, JSON.stringify(e.error || e));   // 오류 전체를 넘겨 오늘 한도/분당 한도를 가림
     }
     // 401·403 등 인증 오류는 즉시 사용자에게 알림
     throw new Error(e.error?.message || `API 오류 (${res.status})`);
@@ -2912,6 +2930,9 @@ const SEONU = (() => {
 
   /* ── 모델 목록 (aitutor와 같은 목록을 씀) ── */
   const MODELS_URL = 'https://hmseodam.github.io/aitutor/models.json';
+  // 선우가 먼저 쓰는 모델 ('자동'일 때) — 2.5 Flash: 응답이 빠르고 안정적. 목록에서 빠지면 aitutor 목록의 기본 모델로
+  const PREFER = 'gemini-2.5-flash';
+  const autoModel = () => (MODELS.some(m => m.id === PREFER) ? PREFER : MODEL_DEFAULT);
   let MODELS = [
     { id: 'gemini-3.8-flash',      label: '3.8 Flash' },
     { id: 'gemini-3.6-flash',      label: '3.6 Flash' },
@@ -3263,12 +3284,17 @@ const SEONU = (() => {
       const m = (e.message || '').toLowerCase();
       let msg;
       if (e.badKey) msg = 'API 키가 맞지 않아요. 시작 화면의 키를 확인해 주세요.';
-      else if (e.status === 429 || /quota|exhausted|rate limit/.test(m)) msg = 'AI 사용 한도에 잠시 걸렸어요. 1분쯤 뒤(하루 한도라면 내일) 다시 말씀해 주세요.';
+      else if (e.allGone || ((e.tried || []).length && e.tried.every(x => x.k === 'day' || x.k === 'gone')))
+        msg = '오늘 이 키로 쓸 수 있는 AI 사용량을 모든 모델에서 다 썼어요. 한국 시간 오후 4~5시쯤 다시 풀려요.';
+      else if (e.status === 429 || /quota|exhausted|rate limit/.test(m) || (e.tried || []).some(x => x.k === 'min'))
+        msg = 'AI 사용 한도에 잠시 걸렸어요. 1분쯤 뒤 다시 말씀해 주세요.';
       else if (/high demand|overloaded|unavailable|try again/.test(m) || [500, 502, 503, 504].includes(e.status)) msg = '구글 서버가 붐비네요. 잠시 뒤 다시 말씀해 주세요.';
       else if (e.name === 'TypeError') msg = '인터넷 연결을 확인해 주세요.';
       else msg = '답을 받지 못했어요. ' + (e.message || '');
       if (!on) return;
-      setSt('idle', '잠시 문제가 있어요 — 구슬을 누르면 다시 들어요'); drawTx(msg); toast(msg, 5000);
+      // 어느 모델을 차례로 시도했고 왜 안 됐는지 함께 보여 줌 (예: 3.8 Flash 오늘 한도 → 3.6 Flash 분당 한도 → 2.5 Flash 붐빔)
+      const sum = (e.tried || []).map(x => `${mLabel(x.m)} ${WHY[x.k] || x.k}`).join(' → ');
+      setSt('idle', '잠시 문제가 있어요 — 구슬을 누르면 다시 들어요'); drawTx(msg + (sum ? `\n[시도한 모델] ${sum}` : '')); toast(msg, 5000);
       return;
     }
     busy = false;
@@ -3327,8 +3353,7 @@ const SEONU = (() => {
     if (/gemini-([3-9]|\d\d)/.test(m)) return { thinkingLevel: 'low' };
     return null;
   }
-  // Gemini 호출: 고른 모델(기본은 aitutor 목록의 기본 모델) → 막히면 다음 모델로
-  // 쓸 모델 순서: first(없으면 기본 모델) → 나머지. 종료된 모델은 빼고, 붐빔·한도로 쉬는 모델은 뒤로 미룸
+  // 쓸 모델 순서: first(없으면 기본 모델) → 나머지. 쓸 수 없게 된 모델은 빼고, 잠시 쉬는 모델은 건너뜀
   // (간화선 점검 gCall도 이 순서를 함께 씀)
   function modelOrder(first) {
     first = first && MODELS.some(m => m.id === first) ? first : MODEL_DEFAULT;
@@ -3337,13 +3362,27 @@ const SEONU = (() => {
     const ok = all.filter(m => !((cool[m] || 0) > now));
     return ok.length ? ok : all;
   }
-  // 실패한 모델 기록: 종료·이 키로 못 씀 → 이번 접속 동안 뺌 / 분당 한도 → 1분 / 붐빔·무응답 → 10분 피함
-  function noteModel(m, status, msg) {
-    msg = msg || '';
-    if (status === 404 || /no longer available|is not found|not supported for generateContent|limit: ?0\b|do(es)? not have access/i.test(msg)) dead[m] = 1;
-    else if (status === 429 || /quota|exhausted|rate limit/i.test(msg)) cool[m] = Date.now() + 60e3;
-    else if ([500, 502, 503, 504].includes(status) || /high demand|overloaded|timeout/i.test(msg)) cool[m] = Date.now() + 10 * 60e3;   // 붐빔·무응답
+  // 실패한 모델 기록 — 이유를 돌려줌
+  //  · gone: 종료·이 키로는 못 씀(limit: 0)        → 이번 접속 동안 뺌
+  //  · day : 오늘 한도(하루 요청 수) 소진            → 이번 접속 동안 뺌 (한국 시간 오후 4~5시에 풀림)
+  //  · min : 분당 한도                               → 구글이 알려 준 대기 시간(없으면 1분) 동안 피함
+  //  · busy: 붐빔 / wait: 응답 없음                  → 10분 피함
+  // raw에는 구글 오류 전체(JSON 문자열)를 넣음 — 한도 종류(quotaId)가 details에 들어 있음
+  function noteModel(m, status, raw) {
+    raw = raw || '';
+    if (status === 404 || /no longer available|is not found|not supported for generateContent|limit: ?0\b|do(es)? not have access/i.test(raw)) { dead[m] = 1; return 'gone'; }
+    if (status === 429 || /quota|exhausted|rate limit/i.test(raw)) {
+      if (/PerDay|per ?day|daily/i.test(raw)) { dead[m] = 1; return 'day'; }
+      const sec = +((raw.match(/retry in ([\d.]+)\s*s/i) || raw.match(/"retryDelay"\s*:\s*"([\d.]+)s"/) || [])[1]) || 60;
+      cool[m] = Date.now() + Math.min(300, Math.max(15, sec)) * 1000;
+      return 'min';
+    }
+    if (/timeout/i.test(raw)) { cool[m] = Date.now() + 10 * 60e3; return 'wait'; }
+    if ([500, 502, 503, 504].includes(status) || /high demand|overloaded/i.test(raw)) { cool[m] = Date.now() + 10 * 60e3; return 'busy'; }
+    return 'err';
   }
+  const WHY = { gone: '사용 불가', day: '오늘 한도', min: '분당 한도', busy: '붐빔', wait: '응답 없음', err: '오류', empty: '빈 응답', net: '연결 오류' };
+  const mLabel = id => ((MODELS.find(x => x.id === id) || {}).label || id.replace(/^gemini-/, ''));
   // 모델 세대별 생성 설정
   //  · 3.x 이상: 온도를 지정하지 않음 → 구글 권장 기본값 1.0 (낮추면 같은 말 반복·품질 저하 가능)
   //  · 2.x: 부르는 쪽이 정한 온도를 그대로 씀
@@ -3356,45 +3395,64 @@ const SEONU = (() => {
   }
   const WAIT_MS = 30000;                         // 한 모델을 기다리는 최대 시간 — 넘으면 멈춘 것으로 보고 다음 모델로
   const hasText = d => (d.candidates?.[0]?.content?.parts || []).some(p => !p.thought && (p.text || '').trim());
-  // Gemini 호출: 고른 모델(기본은 aitutor 목록의 기본 모델) → 오류·무응답·빈 응답이면 다음 모델로
+  // 구글 검색에도 따로 한도가 있음 — 검색 때문에 막히면 잠시 검색 없이 답함
+  let searchOffUntil = 0;
+  // Gemini 호출: 고른 모델('자동'이면 2.5 Flash)부터 차례로(로테이션)
+  //   오류·한도·무응답·빈 응답이면 다음 모델로 넘어가고, 어느 모델이 왜 실패했는지 모아 둠(err.tried)
   async function gem(body, opt) {
     opt = opt || {};
-    let last = null;
-    for (const m of modelOrder(cfg.model)) {
-      for (let t = 0; t < 3; t++) {
+    let last = null, probed = false;
+    const tried = [];
+    for (const m of modelOrder(cfg.model || autoModel())) {
+      let noSearch = Date.now() < searchOffUntil, probing = false;
+      for (let t = 0; t < 4; t++) {
         const b = Object.assign({}, body, { generationConfig: genCfg(m, body.generationConfig) });
+        if (noSearch) delete b.tools;
         const ac = new AbortController(), timer = setTimeout(() => ac.abort(), WAIT_MS);
-        let r, d = null, msg = '';
+        let r, d = null, msg = '', raw = '';
         try {
           r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key() }, body: JSON.stringify(b), signal: ac.signal,
           });
-          if (r.ok) d = await r.json(); else { try { msg = (await r.json()).error?.message || ''; } catch (_) {} }
+          if (r.ok) d = await r.json();
+          else { try { const ej = await r.json(); msg = ej.error?.message || ''; raw = JSON.stringify(ej.error || ej); } catch (_) {} }
         } catch (e) {
           clearTimeout(timer);
-          if (e.name === 'AbortError') { noteModel(m, 504, 'timeout'); last = new Error(`${m} 응답 없음`); last.status = 504; }
-          else last = e;
+          if (e.name === 'AbortError') { tried.push({ m, k: noteModel(m, 504, 'timeout') }); last = new Error(`${m} 응답 없음`); last.status = 504; }
+          else { tried.push({ m, k: 'net' }); last = e; }
           break;                                  // 무응답·연결 오류 → 다음 모델
         }
         clearTimeout(timer);
         if (d) {
-          if (d.error) { last = new Error(d.error.message || '알 수 없는 오류'); break; }
-          if (opt.needText && !hasText(d)) {      // 답이 비어 오면(생각만 하다 끝남·차단 등) 다음 모델로
-            const fr = d.candidates?.[0]?.finishReason || d.promptFeedback?.blockReason || '';
-            if (fr === 'SAFETY' || d.promptFeedback?.blockReason) return d;   // 안전 차단은 다른 모델도 같으므로 그대로
-            last = new Error('빈 응답'); break;
+          if (d.error) { tried.push({ m, k: 'err' }); last = new Error(d.error.message || '알 수 없는 오류'); break; }
+          if (opt.needText && !hasText(d)) {      // 답이 비어 오면(생각만 하다 끝남 등) 다음 모델로
+            if (d.candidates?.[0]?.finishReason === 'SAFETY' || d.promptFeedback?.blockReason) return d;   // 안전 차단은 다른 모델도 같으므로 그대로
+            tried.push({ m, k: 'empty' }); last = new Error('빈 응답'); break;
+          }
+          if (probing) {                          // 검색을 빼니 됐다 → 막힌 것은 검색 한도
+            searchOffUntil = Date.now() + 15 * 60e3;
+            toast('구글 검색 한도에 걸려 15분 동안은 검색 없이 답해요', 4500);
           }
           return d;
         }
         const err = new Error(msg || `HTTP ${r.status}`); err.status = r.status; last = err;
         if (/api key not valid|api_key_invalid|invalid api key|api key expired/i.test(msg)) { err.badKey = true; throw err; }
         if (r.status === 400 && /think/i.test(msg) && !noThink[m]) { noThink[m] = 1; continue; }   // 생각 설정을 받지 않는 모델
+        // 검색을 켠 채 막히면 검색을 빼고 같은 모델로 다시 해 봄 → 되면 막힌 것은 검색 한도
+        //  · 오류에 검색(search·grounding)이 적혀 있으면 모델마다, 그냥 한도(429)면 한 요청에 한 번만 확인
+        if (b.tools && (/search|grounding/i.test(raw + msg) || (r.status === 429 && !probed))) {
+          probed = probing = noSearch = true; continue;
+        }
         if (t === 0 && ([500, 502, 503, 504].includes(r.status) || /high demand|overloaded/i.test(msg))) { await sleep(1800); continue; }
-        noteModel(m, r.status, msg);
+        tried.push({ m, k: noteModel(m, r.status, raw || msg) });
         break;                                    // 한도·붐빔·기타 → 다음 모델
       }
     }
-    throw last || new Error('쓸 수 있는 모델을 찾지 못했어요');
+    if (!tried.length && !last) { last = new Error('쓸 수 있는 모델이 남아 있지 않아요'); last.allGone = true; }
+    last = last || new Error('쓸 수 있는 모델을 찾지 못했어요');
+    last.tried = tried;
+    console.warn('[선우] 모델 로테이션 결과:', tried.map(x => `${x.m}: ${WHY[x.k] || x.k}`).join(' → '));
+    throw last;
   }
   async function callAI(q) {
     const h = hist.map(x => {
@@ -3540,8 +3598,8 @@ const SEONU = (() => {
   }
   function fillModels() {
     const ms = $('dbModel'); if (!ms) return;
-    const def = MODELS.find(m => m.id === MODEL_DEFAULT);
-    ms.innerHTML = `<option value="">자동 · ${esc(def ? def.label : MODEL_DEFAULT)}</option>` +
+    const def = MODELS.find(m => m.id === autoModel());
+    ms.innerHTML = `<option value="">자동 · ${esc(def ? def.label : autoModel())}</option>` +
       MODELS.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
     if (cfg.model && !MODELS.some(m => m.id === cfg.model)) { cfg.model = ''; save(); }   // 목록에서 빠진 모델이면 자동으로
     ms.value = cfg.model;
@@ -3591,9 +3649,13 @@ const SEONU = (() => {
   function hushListen() { hush(); listen(); }
 
   /* ── 화면 연동 ── */
+  const HIDE_ON = ['s-intro', 's-roster', 's-admin'];   // 키를 넣기 전 화면에서는 선우를 숨김
   function onScreen() {
-    const a = document.querySelector('.screen.active');
-    document.body.classList.toggle('db-dark', !!a && a.id === 's-meditation');
+    const a = document.querySelector('.screen.active'), id = a ? a.id : '';
+    document.body.classList.toggle('db-dark', id === 's-meditation');
+    const hide = HIDE_ON.includes(id);
+    document.body.classList.toggle('db-hide', hide);
+    if (hide && on) stop();                     // '키 변경'으로 시작 화면에 돌아가면 대화도 끝냄
   }
   const mo = new MutationObserver(onScreen);
   document.querySelectorAll('.screen').forEach(s => mo.observe(s, { attributes: true, attributeFilter: ['class'] }));
